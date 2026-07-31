@@ -493,7 +493,7 @@ impl StateRootSink for SparseTrieStateRootSink {
 
 /// Converts [`EvmState`] to [`HashedPostState`] using Ethereum empty-account handling.
 pub fn evm_state_to_hashed_post_state(update: EvmState) -> HashedPostState {
-    evm_state_to_hashed_post_state_with_created_empty_accounts(update, false)
+    evm_state_to_hashed_post_state_with_options(update, false, false)
 }
 
 /// Converts [`EvmState`] to [`HashedPostState`] by keccak256-hashing addresses and storage slots.
@@ -505,6 +505,19 @@ pub fn evm_state_to_hashed_post_state_with_created_empty_accounts(
     update: EvmState,
     allow_create_empty_account: bool,
 ) -> HashedPostState {
+    evm_state_to_hashed_post_state_with_options(update, allow_create_empty_account, false)
+}
+
+/// Converts [`EvmState`] to [`HashedPostState`] with custom state-transition policies.
+///
+/// `legacy_selfdestruct_storage_wipes` restores the pre-Cancun behavior where SELFDESTRUCT can
+/// delete an existing account and its complete storage. Ethereum Engine traffic leaves this
+/// disabled. Custom EVMs that execute pre-Cancun blocks through the Engine can opt in.
+pub fn evm_state_to_hashed_post_state_with_options(
+    update: EvmState,
+    allow_create_empty_account: bool,
+    legacy_selfdestruct_storage_wipes: bool,
+) -> HashedPostState {
     let mut hashed_state = HashedPostState::with_capacity(update.len());
 
     for (address, account) in update {
@@ -515,7 +528,10 @@ pub fn evm_state_to_hashed_post_state_with_created_empty_accounts(
             let destroyed = account.is_selfdestructed();
             let created_empty = account.is_created() && account.is_empty();
             let preserve_created_empty = allow_create_empty_account && created_empty;
-            if destroyed || account.info != account.original_info() || preserve_created_empty {
+            if (destroyed && legacy_selfdestruct_storage_wipes) ||
+                account.info != account.original_info() ||
+                preserve_created_empty
+            {
                 let info = if destroyed || (account.is_empty() && !preserve_created_empty) {
                     None
                 } else {
@@ -531,7 +547,9 @@ pub fn evm_state_to_hashed_post_state_with_created_empty_accounts(
                 .map(|(slot, value)| (keccak256(B256::from(slot)), value.present_value))
                 .peekable();
 
-            if !destroyed && changed_storage_iter.peek().is_some() {
+            if destroyed && legacy_selfdestruct_storage_wipes {
+                hashed_state.storages.insert(hashed_address, HashedStorage::new(true));
+            } else if !destroyed && changed_storage_iter.peek().is_some() {
                 hashed_state
                     .storages
                     .insert(hashed_address, HashedStorage::from_iter(false, changed_storage_iter));
@@ -643,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_zero_balance_selfdestruct_is_deleted() {
+    fn existing_zero_balance_selfdestruct_uses_configured_legacy_policy() {
         let address = Address::repeat_byte(0x03);
         let mut account = Account::default();
         account.info.code_hash = B256::repeat_byte(0x42);
@@ -655,10 +673,20 @@ mod tests {
         // status in the EVM state update.
         assert_eq!(account.info, account.original_info());
 
-        let hashed_state =
-            evm_state_to_hashed_post_state(EvmState::from_iter([(address, account)]));
+        let default_hashed_state =
+            evm_state_to_hashed_post_state(EvmState::from_iter([(address, account.clone())]));
+        let legacy_hashed_state = evm_state_to_hashed_post_state_with_options(
+            EvmState::from_iter([(address, account)]),
+            false,
+            true,
+        );
+        let hashed_address = keccak256(address);
 
-        assert_eq!(hashed_state.accounts.get(&keccak256(address)), Some(&None));
+        assert!(!default_hashed_state.accounts.contains_key(&hashed_address));
+        assert!(!default_hashed_state.storages.contains_key(&hashed_address));
+        assert_eq!(legacy_hashed_state.accounts.get(&hashed_address), Some(&None));
+        assert!(legacy_hashed_state.storages[&hashed_address].wiped);
+        assert!(legacy_hashed_state.storages[&hashed_address].storage.is_empty());
     }
 
     #[derive(Default)]

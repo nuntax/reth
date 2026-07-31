@@ -3,8 +3,7 @@
 use std::sync::Arc;
 
 use super::{
-    evm_state_to_hashed_post_state_with_created_empty_accounts, StateRootComputeOutcome,
-    StateRootMessage,
+    evm_state_to_hashed_post_state_with_options, StateRootComputeOutcome, StateRootMessage,
 };
 use alloy_primitives::{
     map::{hash_map::Entry, B256Map},
@@ -148,6 +147,7 @@ where
         new_epoch: TrieNodeEpoch,
         chunk_size: usize,
         allow_create_empty_account: bool,
+        legacy_selfdestruct_storage_wipes: bool,
     ) -> Self {
         let (hashed_state_tx, hashed_state_rx) = crossbeam_channel::unbounded();
 
@@ -160,6 +160,7 @@ where
                 hashed_state_tx,
                 hashing_metrics,
                 allow_create_empty_account,
+                legacy_selfdestruct_storage_wipes,
             )
         });
 
@@ -203,6 +204,7 @@ where
         hashed_state_tx: CrossbeamSender<SparseTrieTaskMessage>,
         metrics: SparseTrieTaskMetrics,
         allow_create_empty_account: bool,
+        legacy_selfdestruct_storage_wipes: bool,
     ) {
         let mut total_idle_time = std::time::Duration::ZERO;
         let mut idle_start = Instant::now();
@@ -216,9 +218,10 @@ where
                 }
                 StateRootMessage::StateUpdate(state) => {
                     let _span = trace_span!(target: "engine::tree::payload_processor::sparse_trie", "hashing_state_update", n = state.len()).entered();
-                    let hashed = evm_state_to_hashed_post_state_with_created_empty_accounts(
+                    let hashed = evm_state_to_hashed_post_state_with_options(
                         state,
                         allow_create_empty_account,
+                        legacy_selfdestruct_storage_wipes,
                     );
                     SparseTrieTaskMessage::HashedState(hashed)
                 }
@@ -1174,6 +1177,7 @@ mod tests {
                 hashed_state_tx,
                 SparseTrieTaskMetrics::default(),
                 false,
+                false,
             );
         });
 
@@ -1283,6 +1287,7 @@ mod tests {
             TrieNodeEpoch::UNMODIFIED,
             1,
             false,
+            false,
         );
 
         updates_tx.send(StateRootMessage::FinishedStateUpdates).unwrap();
@@ -1337,6 +1342,7 @@ mod tests {
             B256::from([0x55; 32]),
             TrieNodeEpoch::UNMODIFIED,
             1,
+            false,
             false,
         );
 
@@ -1427,6 +1433,7 @@ mod tests {
             TrieNodeEpoch::UNMODIFIED,
             1,
             false,
+            false,
         );
 
         // The consumer abandons the computation. The updates channel is still open (no finish
@@ -1480,6 +1487,7 @@ mod tests {
             B256::from([0x55; 32]),
             TrieNodeEpoch::UNMODIFIED,
             1,
+            false,
             false,
         );
 

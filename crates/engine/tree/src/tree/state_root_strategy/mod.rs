@@ -84,9 +84,9 @@ pub use reth_trie_parallel::{
     error::StateRootTaskError,
     state_root_task::{
         evm_state_to_hashed_post_state, evm_state_to_hashed_post_state_with_created_empty_accounts,
-        PayloadStateRootHandle, StateAccessHint, StateRootComputeOutcome, StateRootHandle,
-        StateRootHintStream, StateRootMessage, StateRootSink, StateRootTaskCancelGuard,
-        StateRootUpdateHook, StateRootUpdateStream,
+        evm_state_to_hashed_post_state_with_options, PayloadStateRootHandle, StateAccessHint,
+        StateRootComputeOutcome, StateRootHandle, StateRootHintStream, StateRootMessage,
+        StateRootSink, StateRootTaskCancelGuard, StateRootUpdateHook, StateRootUpdateStream,
     },
 };
 #[cfg(feature = "trie-debug")]
@@ -502,12 +502,19 @@ pub struct DefaultStateRootStrategy {
     /// Disabled by default for Ethereum. Custom EVMs that permit created empty accounts can opt
     /// in through [`Self::with_allow_create_empty_account`].
     allow_create_empty_account: bool,
+    /// Whether SELFDESTRUCT deletes an existing account and wipes its complete storage.
+    ///
+    /// Disabled by default for post-Cancun Ethereum Engine traffic. Custom EVMs that execute
+    /// pre-Cancun blocks through the Engine can opt in through
+    /// [`Self::with_legacy_selfdestruct_storage_wipes`].
+    legacy_selfdestruct_storage_wipes: bool,
 }
 
 impl fmt::Debug for DefaultStateRootStrategy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DefaultStateRootStrategy")
             .field("allow_create_empty_account", &self.allow_create_empty_account)
+            .field("legacy_selfdestruct_storage_wipes", &self.legacy_selfdestruct_storage_wipes)
             .finish_non_exhaustive()
     }
 }
@@ -523,6 +530,15 @@ impl DefaultStateRootStrategy {
     /// transition intentionally permits created empty accounts.
     pub const fn with_allow_create_empty_account(mut self, allow: bool) -> Self {
         self.allow_create_empty_account = allow;
+        self
+    }
+
+    /// Configures pre-Cancun SELFDESTRUCT account deletion and full storage wipes.
+    ///
+    /// Ethereum callers should leave this disabled. It exists for custom EVMs that execute
+    /// historical pre-Cancun blocks through the Engine.
+    pub const fn with_legacy_selfdestruct_storage_wipes(mut self, enabled: bool) -> Self {
+        self.legacy_selfdestruct_storage_wipes = enabled;
         self
     }
 
@@ -591,6 +607,7 @@ impl DefaultStateRootStrategy {
                     pending_sparse_trie_prune_blocks
                 },
                 allow_create_empty_account: self.allow_create_empty_account,
+                legacy_selfdestruct_storage_wipes: self.legacy_selfdestruct_storage_wipes,
             },
         );
 
@@ -624,6 +641,7 @@ impl DefaultStateRootStrategy {
             chunk_size,
             pending_sparse_trie_prune_blocks,
             allow_create_empty_account,
+            legacy_selfdestruct_storage_wipes,
         } = options;
         let overlay_manager = overlay_manager.clone();
         let trie_metrics = self.metrics.clone();
@@ -700,6 +718,7 @@ impl DefaultStateRootStrategy {
                 new_epoch,
                 chunk_size,
                 allow_create_empty_account,
+                legacy_selfdestruct_storage_wipes,
             );
 
             let result = task.run();
@@ -788,6 +807,7 @@ struct SparseTrieTaskOptions<N: NodePrimitives> {
     /// `None` disables pruning. `Some(Vec::new())` prunes nodes older than the current block.
     pending_sparse_trie_prune_blocks: Option<Vec<ExecutedBlock<N>>>,
     allow_create_empty_account: bool,
+    legacy_selfdestruct_storage_wipes: bool,
 }
 
 struct StateRootTaskOptions<'a, N: NodePrimitives> {
