@@ -501,7 +501,7 @@ pub fn evm_state_to_hashed_post_state(update: EvmState) -> HashedPostState {
             trace!(target: "trie::parallel::sparse", ?address, ?hashed_address, "Adding account to state update");
 
             let destroyed = account.is_selfdestructed();
-            if account.info != account.original_info() {
+            if destroyed || account.info != account.original_info() {
                 let info = if destroyed { None } else { Some(account.info.into()) };
                 hashed_state.accounts.insert(hashed_address, info);
             }
@@ -575,6 +575,25 @@ mod tests {
 
         assert_eq!(hashed_state.accounts.get(&hashed_address), Some(&None));
         assert!(!hashed_state.storages.contains_key(&hashed_address));
+    }
+
+    #[test]
+    fn existing_zero_balance_selfdestruct_is_deleted() {
+        let address = Address::repeat_byte(0x03);
+        let mut account = Account::default();
+        account.info.code_hash = B256::repeat_byte(0x42);
+        account.set_current_info_as_original();
+        account.mark_touch();
+        assert!(account.mark_selfdestructed_locally());
+
+        // Before Cancun, SELFDESTRUCT of an existing zero-balance account only changes its
+        // status in the EVM state update.
+        assert_eq!(account.info, account.original_info());
+
+        let hashed_state =
+            evm_state_to_hashed_post_state(EvmState::from_iter([(address, account)]));
+
+        assert_eq!(hashed_state.accounts.get(&keccak256(address)), Some(&None));
     }
 
     #[derive(Default)]
